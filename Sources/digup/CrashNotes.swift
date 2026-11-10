@@ -24,7 +24,10 @@ import Glibc
 /// print is gone, which is the trade). Chaining Swift's old handler via `sigaction` would keep both, and is
 /// the natural next step here. On Windows the C runtime translates only SEGV, FPE and ILL — a Swift trap
 /// arrives as an SEH exit code, not one of these signals, so the note may be absent there; the shell then
-/// marks nothing, and the restart cap bounds the loop (disclosed in issue #182's notes).
+/// marks nothing, and the restart cap bounds the loop (disclosed in issue #182's notes). One consequence of
+/// handling SIGTRAP process-wide: a debugger or a profiler that stops the helper on a trap leaves a note here,
+/// and the app marks a file unreadable on the strength of it — attach one to the helper knowing that
+/// (#182's review, 2026-11-10).
 enum CrashNotes {
     nonisolated(unsafe) static var notePath: UnsafeMutablePointer<CChar>?
     nonisolated(unsafe) static var noteBytes: UnsafeMutableRawPointer?

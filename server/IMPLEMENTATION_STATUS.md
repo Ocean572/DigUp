@@ -2,6 +2,52 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-10 — All ten fork PRs merge into `main`; the review round's fixes ride on top
+
+The fork's ten open PRs merge into `main` with `--no-ff` — #184 → #194 → #190 → #200 → #203 →
+#201 → #199 → #202 → #192. **#191 rides #194's commits** (merging it separately conflicts in
+`IndexStore.swift` for zero added content). One merge fix was needed, and it is measured: the
+naive merge does not compile — #200's `pendingKinds` was written against the folder-scope shape
+#194 deleted (`IndexStore.swift:742`, `cannot find 'scopeValues' in scope`); the query now takes
+the `scope`/`scopeb` temp-table shape, like the nine call sites #194 rewrote. Line-level
+integrity held for every PR (each added line present verbatim, 0 conflict markers) — **a
+line-level check passes while the combination fails to compile: verify a merge by building it.**
+
+Gates on the merged tree + the fixes (box `ai-ubuntu-computer`, x86_64, Ryzen 9 7950X, native
+builds — no emulation, no cross-arch copies):
+
+* engine `swift build -c release` + `swift test` inside `--target engine-builder`: **Test run with
+  174 tests in 20 suites passed after 5.186 s**, 0 failures (the 174th is the charset test below;
+  `CounterTests` 5.469 s, `IndexStoreTests` 4.759 s, `PreflightTests` 0.896 s, `MailMessageTests`
+  0.456 s, `CodeTests` 0.457 s — the 2026-11-08 box-specific fsmonitor failure did not recur).
+* contract suite in the container, 4 mounts, `-rs`: **137 passed / 1 deselected / 0 failed /
+  0 skipped in 171.68 s** (one pre-existing `StarletteDeprecationWarning`). Zero-skip invariant held.
+* `node --check` on `shell/ui/*.js`: 6/6. `rustc --edition 2021 --test -D warnings` on the
+  extracted `relative_path` / `prefix_inside` / `folds_path_case` + `copy_path_tests`: 2 passed.
+* `cargo check --all-targets` (the shell crate) is **blocked on this box**: `libdbus-sys` needs
+  `libdbus-1-dev`, and `libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev
+  libsoup-3.0-dev librsvg2-dev libxdo-dev libayatana-appindicator3-dev` are absent (runtime libs only).
+  Upstream `ci.yml` runs the shell's Rust tests on its runners — the Rust half stays CI-gated.
+
+The review round's fixes, in the same push. Mechanical findings only; the design calls are the
+owner's (SIGKILL's crash classification in #182's crash net, `name:`'s 3-character FTS5 prefix floor):
+
+* `MailMessage` (#146's `.emlx` reader): a body's or an encoded-word's bytes, once their transfer
+  encoding is decoded, are read in the charset the header declares — the `iso-8859-1` and
+  `windows-1252` families (0x80…0x9F table, its five undefined slots as the replacement character).
+  `=?iso-8859-1?Q?caf=E9?=` read as UTF-8 is "caf\u{FFFD}", so an accented subject was a word keyword
+  search could not find. UTF-8 stays the default and the fallback; an `8bit` body in another charset
+  stays the documented limit (the file's own bytes are UTF-8-decoded first).
+* shell `relative_path` (#148): case folds **where the filesystem folds it** (Windows) and byte-exact
+  on Linux and the Mac — `/A/x` is not inside root `/a`, and it was getting a relative spelling there.
+  A blank folder setting is not the root `/` (it spelled every copied path from the filesystem's top).
+  The fold decision is a parameter, so both shapes test on a machine with no Windows.
+* shell UI: the context menu's "Copy Path" rides the native clipboard like the hotkeys and its
+  "Copy Relative Path" neighbour do — the line still used `navigator.clipboard`, which #148's own
+  comment says is unavailable on Tauri's custom-scheme origins.
+* `CrashNotes` documents one consequence: SIGTRAP is handled process-wide, so a debugger/profiler
+  that stops the indexing helper on a trap marks a file.
+
 ## 2026-11-08 — The web UI on Lit + Vite (user brief): component architecture, same page, same contract
 
 The user's brief executed: `server/ui/` migrated from vanilla JS to **Lit + JavaScript ES

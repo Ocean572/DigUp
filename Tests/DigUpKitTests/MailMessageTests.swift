@@ -57,6 +57,37 @@ import Testing
         #expect(text.contains("lighthouse keeper climbed"))
     }
 
+    /// The charsets mail before ~2008 wrote: `quoted-printable` with `charset=iso-8859-1` (Apple Mail's
+    /// and Outlook Express's default), base64 with the same, and `windows-1252`, whose 0x80…0x9F is not
+    /// Latin-1's. Their high bytes read as UTF-8 arrive as the replacement character, so an accented
+    /// word becomes a word keyword search cannot find — the shape issue #146's review (2026-11-10) found
+    /// in this reader.
+    @Test func declaredCharsetsReadTheirOwnBytes() throws {
+        let mail = "Subject: =?iso-8859-1?Q?Le_caf=E9?=\r\n"
+            + "Content-Type: text/plain; charset=iso-8859-1\r\n"
+            + "Content-Transfer-Encoding: quoted-printable\r\n"
+            + "\r\n"
+            + "Le caf=E9 au lait, et un th=E9.\r\n"
+        let text = try #require(MailMessage.text(from: bytes(mail)))
+        #expect(text.contains("Le café au lait, et un thé."))
+        #expect(text.contains("Subject: Le café"))     // the encoded-word header reads its own charset
+        #expect(!text.contains("\u{FFFD}"))
+        let win = "Subject: 1252\r\nContent-Type: text/plain; charset=windows-1252\r\n"
+            + "Content-Transfer-Encoding: quoted-printable\r\n\r\nThe =93bridge=94 cost =80 tokens.\r\n"
+        #expect(try #require(MailMessage.text(from: bytes(win))).contains("The “bridge” cost € tokens."))
+        let latin1 = Data([0x63, 0x61, 0x66, 0xE9]).base64EncodedString()   // "café" spelled in Latin-1
+        let b64 = "Subject: b64\r\nContent-Type: text/plain; charset=iso-8859-1\r\n"
+            + "Content-Transfer-Encoding: base64\r\n\r\n" + latin1 + "\r\n"
+        #expect(try #require(MailMessage.text(from: bytes(b64))).contains("café"))
+        // the table, directly: 0x80…0x9F is the half 1252 moves, 0xA0…0xFF is Latin-1's, and an
+        // undeclared body stays UTF-8 — the documented default, replacement character and all
+        #expect(MailMessage.decoded([0x63, 0x61, 0x66, 0xE9], "ISO_8859-1:1987") == "café")
+        #expect(MailMessage.decoded([0x80, 0x92, 0xA3], "windows-1252") == "€’£")
+        #expect(MailMessage.decoded([0x63, 0x61, 0x66, 0xE9], nil) == "caf\u{FFFD}")
+        #expect(MailMessage.decoded([0x63, 0x61, 0x66, 0xE9], "utf-8") == "caf\u{FFFD}")
+        #expect(MailMessage.decoded([0x63, 0x61, 0x66, 0xC3, 0xA9], "utf-8") == "café")
+    }
+
     @Test func attachmentsStayOutAndTheHeaderStaysSearchable() throws {
         let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).base64EncodedString()
         let mail = "From: Ana <ana@example.org>\r\nSubject: The violin varnish\r\n"

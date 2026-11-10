@@ -10,8 +10,12 @@ import Foundation
 /// answers `nil` — `DocExtractor` then returns the raw text, which for mail is mostly
 /// readable words and never less than what people get today by treating the file as
 /// text. It is *not* a mail client: attachments are not unpacked, DKIM and MIME quirks
-/// are not parsed, nested multiparts go eight levels deep at most, charsets are read as
-/// UTF-8 (what mail uses today), and Mail.app's own database is not read — issue #146's
+/// are not parsed, nested multiparts go eight levels deep at most. Charsets: a body's or
+/// an encoded-word's bytes, once their transfer encoding is decoded, are read in the
+/// charset the header declares for the `iso-8859-1` and `windows-1252` families mail
+/// before ~2008 sends, and as UTF-8 for everything else — the file's own bytes are
+/// UTF-8-decoded first, so an `8bit` body in another charset is the documented limit.
+/// Mail.app's own database is not read — issue #146's
 /// full Mail-source idea (Envelope Index, `message://` opening, a Settings source
 /// toggle) is its own feature; this is the file-reading slice, the one its "the same way
 /// it searches PDFs and documents" asks for.
@@ -89,7 +93,7 @@ enum MailMessage {
             let words = String(tail[tail.startIndex..<end.lowerBound])
             rest = tail[end.upperBound...]
             let parts = words.split(separator: "?", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count == 3, let decoded = decodedHeaderWord(encoding: parts[1], text: parts[2]) else {
+            guard parts.count == 3, let decoded = decodedHeaderWord(charset: parts[0], encoding: parts[1], text: parts[2]) else {
                 out += "=\(words)?="
                 continue
             }
@@ -98,7 +102,10 @@ enum MailMessage {
         return out + String(rest)
     }
 
-    private static func decodedHeaderWord(encoding: String, text: String) -> String? {
+    /// One `=?charset?encoding?text?=` word. Its own header names the charset, so the bytes the
+    /// `Q`/`B` encoding gives are read in it (issue #146's review, 2026-11-10: `=?iso-8859-1?Q?caf=E9?=`
+    /// read as UTF-8 gives "caf\u{FFFD}", and a French subject loses its word to keyword search).
+    private static func decodedHeaderWord(charset: String, encoding: String, text: String) -> String? {
         switch encoding.uppercased() {
         case "Q":
             var bytes: [UInt8] = []
@@ -119,12 +126,12 @@ enum MailMessage {
                 rest = after.dropFirst(2)
             }
             bytes.append(contentsOf: rest.utf8)
-            return String(decoding: bytes, as: UTF8.self)
+            return decoded(bytes, charset)
         case "B":
             var word = text
             while word.count % 4 != 0 { word += "=" }   // RFC 2047 sends 7-bit words unpadded
             guard let data = Data(base64Encoded: word, options: [.ignoreUnknownCharacters]) else { return nil }
-            return String(decoding: data, as: UTF8.self)
+            return decoded([UInt8](data), charset)
         default:
             return nil
         }
@@ -149,15 +156,58 @@ enum MailMessage {
 
     // MARK: Bodies
 
+    /// The bytes of a decoded body (or of an RFC 2047 encoded-word) read in the charset its header
+    /// declares. UTF-8 is the default and the fallback — `us-ascii`'s bytes are valid UTF-8, so it
+    /// needs nothing. The two families mail before ~2008 sends are named here because reading their
+    /// high bytes as UTF-8 gives the replacement character for every accented letter, and an accented
+    /// word is a word keyword search cannot find: `charset=iso-8859-1` with `quoted-printable` is what
+    /// Apple Mail and Outlook Express wrote by default. Any other declared charset reads as UTF-8, as
+    /// the header of this file documents.
+    static func decoded(_ bytes: [UInt8], _ charset: String?) -> String {
+        switch charsetName(charset) {
+        case "iso88591", "latin1":
+            return String(decoding: bytes.map { UInt32($0) }, as: UTF32.self)   // every byte is its own code point
+        case "windows1252", "cp1252", "1252":
+            var units: [UInt32] = []
+            units.reserveCapacity(bytes.count)
+            for byte in bytes {
+                units.append(byte < 0x80 ? UInt32(byte)
+                    : byte < 0xA0 ? windows1252High[Int(byte) - 0x80]
+                    : UInt32(byte))   // 0xA0…0xFF is Latin-1's own
+            }
+            return String(decoding: units, as: UTF32.self)
+        default:
+            return String(decoding: bytes, as: UTF8.self)
+        }
+    }
+
+    /// `ISO-8859-1:1987` and `iso_8859-1` name the same charset as `iso-8859-1`: the name's first piece,
+    /// letters and digits only, is what the switch above compares.
+    private static func charsetName(_ charset: String?) -> String {
+        guard let charset, let first = charset.split(separator: ":").first else { return "" }
+        return String(first).lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// `windows-1252`'s high half, 0x80…0x9F as code points (its 0xA0…0xFF is Latin-1's own). The five
+    /// slots the specification leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) read as the replacement
+    /// character. `UInt32` and not `Unicode.Scalar`: Swift gives the scalar no integer literal.
+    private static let windows1252High: [UInt32] = [
+        0x20AC, 0xFFFD, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,   // 0x80…0x87
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFD, 0x017D, 0xFFFD,   // 0x88…0x8F
+        0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,   // 0x90…0x97
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFD, 0x017E, 0x0178,   // 0x98…0x9F
+    ]
+
     private static func decode(_ body: String, _ transfer: String, _ contentType: String) -> String {
+        let charset = parameter("charset", in: contentType)
         var text = body
         switch transfer.lowercased() {
-        case "quoted-printable", "quoted_printable": text = quotedPrintable(body)
+        case "quoted-printable", "quoted_printable": text = quotedPrintable(body, charset)
         case "base64":
             var clean = body.filter { !$0.isNewline }
             while clean.count % 4 != 0 { clean += "=" }
             text = Data(base64Encoded: clean, options: [.ignoreUnknownCharacters])
-                .map { String(decoding: $0, as: UTF8.self) } ?? body
+                .map { decoded([UInt8]($0), charset) } ?? body
         default: break
         }
         if contentType.contains("html") { text = DocExtractor.plainText(fromHTML: text) }
@@ -165,19 +215,20 @@ enum MailMessage {
     }
 
     /// `=3D` hex escapes and `=\r\n` soft line breaks (RFC 2045) — collected as bytes and
-    /// read back as UTF-8 at the end, so `=C3=A9` lands as "é" and not as two letters.
+    /// read back in the declared charset (UTF-8 when the header names none) at the end, so `=C3=A9`
+    /// lands as "é" and not as two letters, and `=E9` under `charset=iso-8859-1` lands as "é" too.
     /// Plain text (the run between escapes, and a hex-looking word after an unescaped
     /// `=`) passes through as written. The walk stays on views of the same string:
     /// rebuilding the rest per escape made it quadratic (measured at the review:
     /// 128k escapes, 76 s on this box) — a body of dense escapes at the 8 MB cap
     /// would take hours of one worker.
-    static func quotedPrintable(_ text: String) -> String {
+    static func quotedPrintable(_ text: String, _ charset: String? = nil) -> String {
         var bytes: [UInt8] = []
         var rest = Substring(text)
         while let at = rest.firstIndex(of: "=") {
             bytes.append(contentsOf: rest[rest.startIndex..<at].utf8)
             let after = rest[rest.index(after: at)...]
-            if after.isEmpty { bytes.append(0x3D); return String(decoding: bytes, as: UTF8.self) }
+            if after.isEmpty { bytes.append(0x3D); return decoded(bytes, charset) }
             if after.first == "\n" || after.first == "\r" || after.first == "\r\n" {
                 // Soft break: mail wraps long lines by ending them with "=". A CRLF pair is
                 // one Character in Swift (grapheme), so all three shapes drop as one.
@@ -194,6 +245,6 @@ enum MailMessage {
             rest = after
         }
         bytes.append(contentsOf: rest.utf8)
-        return String(decoding: bytes, as: UTF8.self)
+        return decoded(bytes, charset)
     }
 }

@@ -380,7 +380,7 @@ function wire(item, hit) {
       [`Show in ${FILE_MANAGER}`, () => reveal(hit)],
       null,
       ["Copy", () => invoke("copy_file", { path: hit.path }).catch(failed)],
-      ["Copy Path", () => navigator.clipboard.writeText(hit.path).catch(failed)],
+      ["Copy Path", () => copyPathText({ preventDefault: () => {} }, hit, true, true)],
       ["Copy Relative Path", () => copyPathText({ preventDefault: () => {} }, hit, true, false)],
     ]);
   };

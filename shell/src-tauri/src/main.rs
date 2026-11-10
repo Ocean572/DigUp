@@ -505,37 +505,57 @@ fn copy_text(window: tauri::WebviewWindow, text: String) -> Result<(), String> {
 }
 
 /// The path inside the search folder that contains it — the longest match wins (a folder inside
-/// another listed one); compared case-insensitively, as Windows spells folders; `/` shown. None when
-/// no root holds it (then the caller copies the absolute path) — and when it *is* a root itself,
-/// where there is no shorter spelling left. A root spelled `/` (searching the whole Unix filesystem)
-/// holds every absolute path.
+/// another listed one); compared case-insensitively **where the filesystem folds case** (Windows) and
+/// byte-exact on Linux and the Mac, where `/a` does not contain `/A` (#148 review, 2026-11-10). `/`
+/// shown. None when no root holds it (then the caller copies the absolute path) — and when it *is* a
+/// root itself, where there is no shorter spelling left. A root spelled `/` (searching the whole Unix
+/// filesystem) holds every absolute path. A **blank** entry holds nothing: the trimmed stem of `/` is
+/// empty, so the shape that gives `/` its meaning would give a blank folder setting the same one, and
+/// every copied path would be spelled from the filesystem's top.
 fn relative_path(path: &str, roots: &[String]) -> Option<String> {
     let shown = path.replace('\\', "/");
     roots
         .iter()
-        .map(|root| {
-            let stem = root.replace('\\', "/");
-            let stem = stem.trim_end_matches('/'); // any number of trailing separators: "C:\Initial\"
+        .filter_map(|root| {
+            let slashed = root.replace('\\', "/");
+            let stem = slashed.trim_end_matches('/'); // any number of trailing separators: "C:\Initial\"
+            if stem.is_empty() && !slashed.contains('/') { return None; }   // a blank setting entry
             let hit = if stem.is_empty() {
                 usize::from(shown.starts_with('/')) // the root "/" — the trimmed stem matches by prefix
             } else if shown == stem {
                 stem.len()
             } else if shown.len() > stem.len()
                 && shown.as_bytes()[stem.len()] == b'/'
-                && shown[..stem.len()].eq_ignore_ascii_case(stem)
+                && prefix_inside(&shown[..stem.len()], stem)
             {
                 stem.len()
             } else {
                 0
             };
-            (hit, stem.len())
+            (hit > 0).then(|| (hit, stem.len()))
         })
-        .filter(|(hit, _)| *hit > 0)
         .max_by_key(|(hit, _)| *hit)
         .and_then(|(_, stem_len)| {
             let rest = shown[stem_len..].trim_start_matches('/').to_string();
             (!rest.is_empty()).then_some(rest)
         })
+}
+
+/// The path's own bytes against the folder's: `eq_ignore_ascii_case` on Windows, where the filesystem
+/// answers `/HOME` and `/home` alike, plain equality elsewhere, where they are two directories. The
+/// caller has already checked the byte after the prefix is `/`, a character boundary, so the slice is safe.
+/// The fold decision is a parameter so both shapes are testable on one machine (this box has no Windows).
+#[inline]
+fn prefix_inside(shown: &str, stem: &str) -> bool {
+    folds_path_case(shown, stem, cfg!(windows))
+}
+
+fn folds_path_case(shown: &str, stem: &str, fold: bool) -> bool {
+    if fold {
+        shown.eq_ignore_ascii_case(stem)
+    } else {
+        shown == stem
+    }
 }
 
 /// A result dragged out of the window (to a file manager, a mail, a chat) on Windows and the Mac: the system's own drag
@@ -2202,8 +2222,9 @@ mod copy_path_tests {
     use super::relative_path;
 
     /// Issue #148's shapes: the folder that contains the file, the longest when folders nest;
-    /// Windows' backslashes spelled as `/`; case-insensitive as Windows spells them; no root, the
-    /// file outside every root, and the root itself give nothing (the callers copy absolute then).
+    /// Windows' backslashes spelled as `/`; case folded on Windows and byte-exact elsewhere; a blank
+    /// setting entry and the root itself give nothing, and so does a file outside every root (the
+    /// callers copy absolute then).
     #[test]
     fn relative_to_the_search_folder_that_contains_it() {
         assert_eq!(relative_path("/home/me/Pics/a/b.png", &["/home/me/Pics".into()]),
@@ -2212,11 +2233,22 @@ mod copy_path_tests {
                    Some("Secret/note.md".into()));
         assert_eq!(relative_path("/home/me/Pics/a.png", &["/home/me".into(), "/home/me/Pics".into()]),
                    Some("a.png".into()));   // the longest folder wins
-        assert_eq!(relative_path("/HOME/me/Pics/a.png", &["/home/Me/Pics/".into()]),
-                   Some("a.png".into()));  // Windows' spelling
+        // Case: Windows folds it in its filesystem, Linux and the Mac do not — `/a` is not the folder
+        // above `/A`, and a relative spelling there would point at a file outside the search folder.
+        if cfg!(windows) {
+            assert_eq!(relative_path("/HOME/me/Pics/a.png", &["/home/Me/Pics/".into()]),
+                       Some("a.png".into()));   // Windows' spelling
+        } else {
+            assert_eq!(relative_path("/HOME/me/Pics/a.png", &["/home/Me/Pics/".into()]), None);
+            assert_eq!(relative_path("/A/x.png", &["/a".into()]), None);
+        }
         assert_eq!(relative_path("/home/me/Else/a.png", &["/home/me/Pics".into()]), None);
         assert_eq!(relative_path("/home/me/Pics", &["/home/me/Pics".into()]), None);   // the root itself
         assert_eq!(relative_path("/home/me/Pics/a.png", &[]), None);
+        // A blank folder setting is not the root "/": it holds no path (#148 review, 2026-11-10).
+        assert_eq!(relative_path("/home/me/Pics/a.png", &["".into()]), None);
+        assert_eq!(relative_path("/home/me/Pics/a.png", &["".into(), "/home/me/Pics".into()]),
+                   Some("a.png".into()));
         // Review cases: the root spelled "/" holds every absolute path (the longest-folder rule
         // still picks a deeper folder first), and a root with trailing separators — one or many.
         assert_eq!(relative_path("/home/me/Pics/a.png", &["/".into()]), Some("home/me/Pics/a.png".into()));
@@ -2224,6 +2256,17 @@ mod copy_path_tests {
         assert_eq!(relative_path("/", &["/".into()]), None);
         assert_eq!(relative_path("C:\\Initial\\Secret\\note.md", &["C:\\Initial\\\\".into()]),
                    Some("Secret/note.md".into()));   // two trailing separators
+    }
+
+    /// Both fold shapes, both checked on one machine (the platform's answer is the `fold` parameter):
+    /// Windows' `/HOME` under `/home/Me` is inside it, Linux's and the Mac's is not.
+    #[test]
+    fn the_case_fold_shape_is_testable_both_ways() {
+        use super::folds_path_case;
+        assert!(folds_path_case("/HOME/me", "/home/Me", true));
+        assert!(!folds_path_case("/HOME/me", "/home/Me", false));
+        assert!(folds_path_case("/home/me", "/home/me", true));
+        assert!(folds_path_case("/home/me", "/home/me", false));
     }
 }
 
