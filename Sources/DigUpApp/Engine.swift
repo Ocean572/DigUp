@@ -115,12 +115,14 @@ nonisolated final class Engine: @unchecked Sendable {
     /// behind oversized RAWs, where the 4-stops cap froze the index after 4 of them).
     private var lastPending: Int?
     private var pendingAtLastStop: Int?
-    /// Exits that mean "the helper died on the file it was reading": fatal signals — SIGILL, SIGTRAP (Swift's
-    /// allocation trap, the "exited (5)" of #182), SIGABRT, SIGFPE, SIGKILL, SIGBUS (mapped-file faults:
-    /// the crash class a truncated picture gives), SIGSEGV. `terminationStatus` carries the signal on
-    /// macOS; the helper's `CrashNotes` leaves a note beside the index, so the next helper marks that
-    /// file. (10 was missing from the list when the pre-push review checked it: SIGBUS crashes left the
-    /// note unread and the helper unrestarted.)
+    /// Exits that mean "the helper died on the spot, so start a new helper": fatal signals — SIGILL,
+    /// SIGTRAP (Swift's allocation trap, the "exited (5)" of #182), SIGABRT, SIGFPE, SIGKILL, SIGBUS
+    /// (mapped-file faults: the crash class a truncated picture gives), SIGSEGV. `terminationStatus`
+    /// carries the signal on macOS; the helper's `CrashNotes` leaves a note beside the index for the
+    /// signals it can catch, so the next helper marks the file it died on. (10 was missing from the list
+    /// when the pre-push review checked it: SIGBUS crashes left the note unread and the helper
+    /// unrestarted.) SIGKILL restarts the helper like the rest, and names a file only on a repeat —
+    /// `StoppedFile.namesFile`, issue #182's review 2026-11-10, below at the stop.
     static func diedOnFile(_ status: Int32) -> Bool { [4, 5, 6, 8, 9, 10, 11].contains(status) }
     /// The last file the helper reported reading (its `"file"` events): when it dies on the spot, the
     /// app names it for the next helper (`DIGUP_STOPPED_FILE`), because the queue's head is not
@@ -128,6 +130,9 @@ nonisolated final class Engine: @unchecked Sendable {
     /// ends, and the head-marking fallback would fail an innocent one (pre-push review of #182).
     private var lastReadFile: String?
     private var crashFile: String?   // the name to pass on, taken by the next spawn
+    /// The queue's pending count at the last fatal-signal kill: SIGKILL names a file only when the kills
+    /// repeat at the same queue position (`StoppedFile.namesFile`, issue #182's review 2026-11-10).
+    private var lastKillPending: Int?
     /// The next helper drops files under folders that are no longer chosen. At launch too, in case the folders
     /// changed while a helper had no time to; but an app with no folders at all never empties the index by itself.
     private var pruneWanted: Bool
@@ -779,11 +784,24 @@ nonisolated final class Engine: @unchecked Sendable {
             // queue that moves 100 files between stops is getting past its bad files, not looping (#182:
             // a photo index of 55,000 froze on this cap after four oversized RAWs).
             if Self.diedOnFile(status) {
-                log("indexer: it died (exit \(status)) on a file: it will be marked, and indexing goes on")
-                // Name it for the helper that starts next (its `CrashNotes` note carries no path):
-                // the queue's head-mark is a fallback, not the answer — a media batch keeps all its
-                // files pending, and the head of a queue of images is rarely the one being read.
-                crashFile = lastReadFile
+                // A SIGKILL (9) is not evidence about a file: macOS' jetsam and Linux' OOM killer pick the
+                // biggest process, which a helper mid-decode is, and the kill cannot leave a `CrashNotes`
+                // note. So the first one restarts on the same file — a retry — and only a repeat (the same
+                // queue position, `pending` not moving between the kills) names and marks it, one retry
+                // late. The 4-stops cap below bounds the loop even when `pending` never reports
+                // (`StoppedFile.namesFile`, issue #182's review 2026-11-10).
+                let repeatKill = lastKillPending != nil && lastKillPending == lastPending
+                lastKillPending = lastPending
+                if StoppedFile.namesFile(for: status, repeated: repeatKill) {
+                    log("indexer: it died (exit \(status)) on a file: it will be marked, and indexing goes on")
+                    // Name it for the helper that starts next (its `CrashNotes` note carries no path):
+                    // the queue's head-mark is a fallback, not the answer — a media batch keeps all its
+                    // files pending, and the head of a queue of images is rarely the one being read.
+                    crashFile = lastReadFile
+                } else {
+                    log("indexer: it was killed (exit \(status)) — a kill accuses no file, so it reads the same file once more; a repeat marks it")
+                    crashFile = nil
+                }
             }
             watchdogStops = watchdogStops.filter { Date().timeIntervalSince($0) < 600 } + [Date()]
             if let pending = lastPending, let before = pendingAtLastStop, before - pending >= 100 {

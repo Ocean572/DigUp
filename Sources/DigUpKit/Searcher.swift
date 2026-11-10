@@ -141,7 +141,7 @@ public final class Searcher {
         // ("quantize_row_q8_0_ref") is matched as one phrase, as it's written. A "name:" search goes through the
         // name segments only (kind 'name': the file's own words in `name`, the folders it sits in in `body`, at
         // their 3-to-1 bm25 weights — the name leads, the folders follow).
-        let terms = Self.terms(text)
+        let terms = Self.terms(text, names: namesOnly)
         let identifier = isCode ? CodeLookup.identifier(text) : nil
         var words: [(file: Int64, segment: Int64, snippet: String?)] = []
         var coverage: [Int64: Double] = [:]   // share of the query's words found anywhere in the file
@@ -150,9 +150,13 @@ public final class Searcher {
         // being typed: "grok" finds "Grok4" and "Grokipedia" (stemming only covers endings, as in "grokking").
         // Otherwise a file the panel showed while you typed dropped out once you stopped. A word that is in the index
         // as typed stays whole, so "cat" doesn't bring in "category"; so does a word of two letters, the start of too
-        // many words to stand for one.
+        // many words to stand for one — except in a "name:" search, whose whole point is the name you are typing
+        // (issue #190's review, 2026-11-10: "name: in" found nothing at all, while "Invoices" is two letters away).
+        // There its words keep the stopword list too: `terms(text, names: true)`, because a name search's words are
+        // name fragments. Words of one letter are no search at all: `terms` drops them, everywhere.
         if identifier == nil {
-            for index in terms.indices where terms[index].count >= 3 && !patterns[index].hasSuffix("*") {
+            for index in terms.indices where !patterns[index].hasSuffix("*")
+                && (terms[index].count >= 3 || (namesOnly && terms[index].count >= 2)) {
                 if try !isIndexed(patterns[index], namesOnly: namesOnly) { patterns[index] += "*" }
             }
         }
@@ -391,11 +395,16 @@ public final class Searcher {
     /// The content words of a query, normalized as keyword search keeps its text (`SearchText`). Kind words
     /// ("screenshot", "video") and stopwords are dropped: they describe what to look for, not what's in it. Words of
     /// two letters or more count; a Bengali letter with its vowel sign ("মা") is two.
-    public static func terms(_ text: String) -> [String] {
+    ///
+    /// `names: true` — the words of a "name:" search — keeps the stopwords: that list is a prose concept, and a
+    /// name search's words are name fragments. "in" is the start of "Invoices", "photo" is a word names carry, and
+    /// dropping either left such a query with no words at all, so it answered nothing (issue #190's review,
+    /// 2026-11-10). Words of one letter drop out in every shape: they stand for too much to search for.
+    public static func terms(_ text: String, names: Bool = false) -> [String] {
         var seen = Set<String>()
         return SearchText.normalized(text).lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.unicodeScalars.count >= 2 && !stopwords.contains($0) && seen.insert($0).inserted }
+            .filter { $0.unicodeScalars.count >= 2 && (names || !stopwords.contains($0)) && seen.insert($0).inserted }
     }
 
     /// FTS5 patterns for the query's words: quoted, and as prefixes for the last word while it's being typed and for

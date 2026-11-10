@@ -144,6 +144,26 @@ public struct StoppedFile: Codable {
     /// The exit status that says "a file was stopped: start a new helper" (EX_TEMPFAIL).
     public static let exitCode: Int32 = 75
 
+    /// The fatal signal that says nothing about a file: SIGKILL. macOS' jetsam and Linux' OOM killer pick
+    /// the process with the biggest footprint, which a helper reading a 45 MP RAW is, and SIGKILL cannot
+    /// be caught — `CrashNotes` leaves no note for it, so the mark's only clue is the file the helper last
+    /// reported reading, and global memory pressure accuses no file in particular. The other fatal signals
+    /// arrive *inside* a file's reading (Swift's allocation trap, the access faults, the CRT's aborts) and
+    /// name the file at once, as #182's crash net has always done (#182's review, 2026-11-10).
+    public static let uncatchableSignal: Int32 = 9
+
+    /// Whether the helper that died by `signal` names the file it was last reading for the next helper —
+    /// the mark that keeps that file out of the index until its bytes change. A catchable crash names it.
+    /// SIGKILL names it only on a **repeat**: the same queue position killed twice, `pending` not moving
+    /// between the kills. The first SIGKILL is a retry of the same file, not an accusation; a file that
+    /// kills the helper on its own sits at the queue's head and is marked on the second kill, one retry
+    /// late — which keeps #182's escape (the poison is cleared, the queue moves) without letting a
+    /// memory-pressure kill silently drop a file a user never gets back. (`repeated`, not `repeat`:
+    /// Swift owns that word.)
+    public static func namesFile(for signal: Int32, repeated: Bool) -> Bool {
+        signal != uncatchableSignal || repeated
+    }
+
     public let path: String?
     public let why: String
 

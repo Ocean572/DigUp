@@ -72,4 +72,33 @@ import Testing
         #expect(try searcher.search("name: grok", queryVector: nil).isEmpty)
         #expect(try searcher.search("name: cat", queryVector: nil).isEmpty)
     }
+
+    /// Issue #190's review (2026-11-10): the point of a names-only search is the name you are still typing, so
+    /// there a word of two letters is a prefix, and the prose stopword list stays out of the words. "name: in"
+    /// found nothing at all before, twice over: "in" is a stopword the plain search drops, and a two-letter word
+    /// stayed whole — while the folder "Invoices" is two letters away. The plain search keeps both of its rules.
+    @Test func twoLetterWordsAreNamePrefixesInANameSearch() throws {
+        let store = try IndexStore(directory: folder)
+        _ = try file(store, "/a/Invoices/x-ray.png", kind: .image)
+        _ = try file(store, "/a/Invoices/petri.png", kind: .image)
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(Set(try searcher.search("name: in", queryVector: nil).map(\.path)) ==
+                ["/a/Invoices/x-ray.png", "/a/Invoices/petri.png"])
+        #expect(try searcher.search("name: i", queryVector: nil).isEmpty)      // one letter: no search
+        #expect(try searcher.search("in", queryVector: nil).isEmpty)          // the plain search keeps its rules
+    }
+
+    /// The other half of the same review line: a name search's words are name fragments, so a stopword of the
+    /// prose list is a word to search there (`Searcher.terms(_:names:)`). "the" is a word names carry; in a
+    /// prose query it drops out, and the query asks for nothing.
+    @Test func aNameSearchKeepsTheWordsAProseQueryDrops() throws {
+        let store = try IndexStore(directory: folder)
+        _ = try file(store, "/c/Docs/the-map.png", kind: .image)
+        _ = try file(store, "/c/Docs/bridge.png", kind: .image)
+        let searcher = try Searcher(store: store, loadVectors: false)
+        #expect(try searcher.search("name: the", queryVector: nil).map(\.path) == ["/c/Docs/the-map.png"])
+        #expect(Set(try searcher.search("name: bridge the", queryVector: nil).map(\.path)) ==
+                ["/c/Docs/bridge.png", "/c/Docs/the-map.png"])   // half the words is the standing gate, as everywhere
+        #expect(try searcher.search("the", queryVector: nil).isEmpty)   // prose: "the" is no search at all
+    }
 }

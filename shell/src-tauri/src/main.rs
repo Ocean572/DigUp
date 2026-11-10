@@ -2053,6 +2053,25 @@ fn died_on_file(status: i64, signal: Option<i64>) -> bool {
             | 0x80000004 | 0xC0000005 | 0xC00000FD | 0xC0000409 | 0xC000001D | 0xC0000094 | 0xC0000096)
 }
 
+/// The kill the OS delivers, not the file: Linux' OOM killer and macOS' jetsam choose the process with the
+/// biggest footprint, which a helper reading a 45 MP RAW is. SIGKILL is not evidence about one file, and it
+/// cannot be caught, so `CrashNotes` leaves no note for it — the mark's only clue is the file the helper last
+/// reported reading, and a global memory pressure accuses no file in particular. Mirrors
+/// `StoppedFile.namesFile` in the kit (#182's review, 2026-11-10).
+fn uncatchable(signal: Option<i64>, status: i64) -> bool {
+    signal == Some(9) || (signal.is_none() && status == 9)
+}
+
+/// Whether the helper that just died names the file it was last reading for the next one (the mark that
+/// keeps that file out of the index until its bytes change). A catchable crash names it at once: the fault
+/// is inside the reading. A SIGKILL names it only on a repeat — the same queue position killed twice,
+/// `pending` not moving between the kills — so the first kill is a retry of the same file and #182's
+/// escape stays: a file that kills the helper on its own sits at the queue's head and is marked on the
+/// second kill, one retry late.
+fn names_file(signal: Option<i64>, status: i64, repeat: bool) -> bool {
+    !uncatchable(signal, status) || repeat
+}
+
 /// The index helper ended by itself (helper.rs's "ended"). A sync asked of it as it was leaving (it exits a minute after
 /// it's done) still has to happen; its watchdog's exit (75: a file whose reading ran away, which the next helper skips)
 /// starts another, though not over and over if something else is wrong (as the Mac app's `Engine.helperExited`).
@@ -2063,11 +2082,6 @@ fn index_ended(app: &AppHandle, event: &Value) {
     let signal = event["signal"].as_i64();
     let died_on_file = died_on_file(status, signal);
     let again = if status == STOPPED_ON_FILE || died_on_file {
-        if died_on_file {
-            eprintln!("digup-shell: the helper died (exit {status}, signal {signal:?}) on a file: it will be \
-                       marked, and indexing goes on");
-            *shell.crash_file.lock().unwrap() = shell.last_file.lock().unwrap().clone();
-        }
         let mut stops = shell.watchdog_stops.lock().unwrap();
         stops.retain(|stop| stop.elapsed() < Duration::from_secs(600));
         stops.push(Instant::now());
@@ -2075,6 +2089,19 @@ fn index_ended(app: &AppHandle, event: &Value) {
         // (#182: the 4-stops cap froze a 55,000-file index after four oversized RAWs).
         let pending = shell.status.lock().unwrap().pending as i64;
         let before = shell.pending_at_stop.swap(pending, Ordering::SeqCst);
+        if died_on_file {
+            // A SIGKILL accuses no file, so the first one reads the same file once more; a repeat at the
+            // same queue position marks it (`names_file`, the same rule as the Mac app's `Engine`).
+            if names_file(signal, status, before == pending) {
+                eprintln!("digup-shell: the helper died (exit {status}, signal {signal:?}) on a file: it will be \
+                           marked, and indexing goes on");
+                *shell.crash_file.lock().unwrap() = shell.last_file.lock().unwrap().clone();
+            } else {
+                eprintln!("digup-shell: the helper was killed (exit {status}, signal {signal:?}) — a kill accuses \
+                           no file, so the same file is read once more; a repeat marks it");
+                *shell.crash_file.lock().unwrap() = None;
+            }
+        }
         if before - pending >= 100 {
             stops.clear();
             stops.push(Instant::now());
@@ -2282,7 +2309,7 @@ mod tests {
 
 #[cfg(test)]
 mod crash_class_tests {
-    use super::died_on_file;
+    use super::{died_on_file, names_file};
 
     /// Issue #182's crash classification, in both platforms' shapes. On Unix a child killed by a signal has
     /// no exit code at all (`ExitStatus::code()` is None there, so `status` reaches us as 0) and the signal
@@ -2307,5 +2334,24 @@ mod crash_class_tests {
             assert!(died_on_file(code, None), "code {code:#x}");
         }
         assert!(!died_on_file(0xC0000022, None));   // a share-stop code: an exit, not a crash
+    }
+
+    /// Issue #182's review (2026-11-10): a SIGKILL accuses no file — the mark lands only when the kills
+    /// repeat at the same queue position (`pending` not moving between them, which `index_ended` reads off
+    /// `pending_at_stop`). Every other fatal class is a fault inside a file's reading and names it at once.
+    #[test]
+    fn a_kill_names_a_file_only_on_a_repeat() {
+        for signal in [4, 5, 6, 8, 10, 11] {
+            assert!(names_file(Some(signal), 0, false), "signal {signal} names at once");
+        }
+        assert!(!names_file(Some(9), 0, false), "the first SIGKILL is a retry, not an accusation");
+        assert!(names_file(Some(9), 0, true), "the repeat marks it");
+        // Windows has no signals (the SEH classes are faults inside the reading: they name at once), and the
+        // Mac app spells a signal as the status itself.
+        for code in [0x80000004i64, 0xC0000005, 0xC0000409] {
+            assert!(names_file(None, code, false), "code {code:#x}");
+        }
+        assert!(!names_file(None, 9, false));
+        assert!(names_file(None, 9, true));
     }
 }

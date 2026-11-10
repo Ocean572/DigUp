@@ -248,4 +248,20 @@ import Testing
         let pending = try store.pending(limit: nil)
         #expect(pending.map(\.path).isEmpty)   // not queued again
     }
+
+    /// Issue #182's review (2026-11-10): SIGKILL accuses no file — macOS' jetsam and Linux' OOM killer
+    /// pick the biggest process, which a helper mid-decode is, and a kill cannot leave a `CrashNotes`
+    /// note. The first one is a retry of the same file; the mark lands on a repeat at the same queue
+    /// position, so a file that kills the helper on its own is cleared one retry late and #182's escape
+    /// stays. The other fatal signals (4 SIGILL, 5 SIGTRAP — Swift's allocation trap — 6 SIGABRT, 8
+    /// SIGFPE, 10 SIGBUS, 11 SIGSEGV) are faults inside a file's reading and name it at once.
+    @Test func aKillMarksAFileOnlyOnARepeat() {
+        for signal: Int32 in [4, 5, 6, 8, 10, 11] {
+            #expect(StoppedFile.namesFile(for: signal, repeated: false), "signal \(signal) names at once")
+            #expect(StoppedFile.namesFile(for: signal, repeated: true), "signal \(signal) names on a repeat too")
+        }
+        #expect(StoppedFile.uncatchableSignal == 9)   // SIGKILL
+        #expect(!StoppedFile.namesFile(for: StoppedFile.uncatchableSignal, repeated: false))
+        #expect(StoppedFile.namesFile(for: StoppedFile.uncatchableSignal, repeated: true))
+    }
 }

@@ -2,6 +2,46 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-10 — The review's three open calls, fixed: kills, short `name:`, mail charsets
+
+The user asked for the three recorded design items to be fixed (the review trail:
+`server/data/pr-merge-review-2026-11-10.md` §9, git-ignored). None of the three is a safety net
+removed; each keeps what #182 and #146 were measured for.
+
+* **SIGKILL accuses no file.** `StoppedFile.namesFile(for:repeated:)` in the kit: SIGKILL — macOS'
+  jetsam, Linux' OOM killer: they pick the biggest process, which a helper mid-decode is, and a kill
+  cannot leave a `CrashNotes` note — keeps restarting the helper, and names the file it was last
+  reading only on a **repeat**: the same queue position killed twice with `pending` not moving between
+  the kills. The first kill reads that file once more; a file that kills the helper on its own sits at
+  the queue's head and is marked on the second kill, one retry late. #182's escape stays (the queue
+  moves past the oversized RAWs; the 4-stops cap is untouched), and a global memory-pressure kill no
+  longer drops one file out of the index permanently. Mac app: `Engine.lastKillPending` at the stop;
+  shell: `uncatchable`/`names_file` over `pending_at_stop`.
+* **`name:` with two letters finds names.** The engine's own probe loop kept 2-letter words whole, and
+  `Searcher.terms` drops the prose stopword list — so "name: in" answered nothing twice over. In a
+  names-only search the words typed are name fragments: `Searcher.terms(text, names: true)` keeps the
+  stopwords there, and a 2-letter word becomes a prefix when it is in no name as typed, so "Invoices"
+  answers ("name: the" finds a file named "the-map"). The plain search keeps both of its rules, and
+  one-letter words stay dropped everywhere. The "FTS5 3-character prefix floor" the review named was
+  these engine conditions, not SQLite's. `Searcher.terms`'s new argument is defaulted, so every
+  existing call (the panel's highlighting included) is unchanged.
+* **Mail bodies read in the charset they declare.** The MIME walk is byte-level: the header block reads
+  as UTF-8 when its bytes are valid UTF-8 and as Latin-1 when they are not; `7bit`/`8bit`/`binary`,
+  quoted-printable (one linear byte pass — the String version's quadratic case, 128k escapes in 76 s,
+  is gone) and base64 bodies all decode in the charset the Content-Type names. `8bit` bodies in
+  `iso-8859-1`/`windows-1252` (mail before ~2008 wrote them) keep their accents: their high bytes were
+  replacement characters before any charset was read. An undecodable base64 body falls back to what its
+  own bytes spell, not to the base64 letters.
+
+Gates, native x86_64 on this box: engine `swift build -c release` + `swift test` in
+`--target engine-builder` — 179 tests in 20 suites passed, 0 failed, 5.470 s (the release build: 56.47 s); the contract suite in the container (4 mounts, `-rs`) —
+137 passed, 1 deselected, 0 failed, 0 skipped, 171.16 s; `rustc --edition 2021 --test -D warnings` on the shell's extracted pure functions +
+`copy_path_tests` + `crash_class_tests` — 5 passed / 0 failed. The crate's own `cargo check` still
+needs the GTK/WebKit `-dev` packages (`dbus-1`, `glib-2.0`, `gtk+-3.0`, `webkit2gtk-4.1`,
+`javascriptcoregtk-4.1`, `soup-3.0`, `rsvg-2.0`, `xdo`, `ayatana-appindicator3-0.1`): upstream
+`ci.yml` runs the shell's Rust tests on its runners.
+
+
 ## 2026-11-10 — All ten fork PRs merge into `main`; the review round's fixes ride on top
 
 The fork's ten open PRs merge into `main` with `--no-ff` — #184 → #194 → #190 → #200 → #203 →

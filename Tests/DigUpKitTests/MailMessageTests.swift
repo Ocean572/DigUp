@@ -88,6 +88,37 @@ import Testing
         #expect(MailMessage.decoded([0x63, 0x61, 0x66, 0xC3, 0xA9], "utf-8") == "café")
     }
 
+    /// Issue #146's review (2026-11-10), the reason the walk is over bytes: an `8bit` body in
+    /// `iso-8859-1` — the shape Outlook Express and Mail.app of that era wrote — carries its accented
+    /// letters as raw high bytes. Reading the file as text first turned every one of them into the
+    /// replacement character before the charset was ever read. They arrive intact now.
+    @Test func an8BitBodyInLatin1KeepsItsAccents() throws {
+        var mail = Data("From: Ana <ana@example.org>\r\nSubject: =?iso-8859-1?Q?Le_caf=E9?=\r\n".utf8)
+        mail.append(Data(("Content-Type: text/plain; charset=iso-8859-1\r\n"
+            + "Content-Transfer-Encoding: 8bit\r\n\r\nLe caf").utf8))
+        mail.append(0xE9)
+        mail.append(Data(" au lait, et un th".utf8))
+        mail.append(0xE9)
+        mail.append(Data(".\r\n".utf8))
+        let text = try #require(MailMessage.text(from: mail))
+        #expect(text.contains("Le café au lait, et un thé."))
+        #expect(text.contains("Subject: Le café"))
+        #expect(!text.contains("\u{FFFD}"))
+    }
+
+    /// A header block spelled in raw Latin-1 (`Subject: Le café`, no encoded-word — the shape mail of
+    /// that era wrote): valid UTF-8 stays UTF-8, and a block that is not reads as Latin-1. The
+    /// replacement character is never a header.
+    @Test func aHeaderBlockInRawLatin1ReadsAsLatin1() throws {
+        var mail = Data("From: Ana <ana@example.org>\r\nSubject: Le caf".utf8)
+        mail.append(0xE9)
+        mail.append(Data("\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nThe bridge survey.\r\n".utf8))
+        let text = try #require(MailMessage.text(from: mail))
+        #expect(text.contains("Subject: Le café"))
+        #expect(text.contains("The bridge survey."))
+        #expect(!text.contains("\u{FFFD}"))
+    }
+
     @Test func attachmentsStayOutAndTheHeaderStaysSearchable() throws {
         let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).base64EncodedString()
         let mail = "From: Ana <ana@example.org>\r\nSubject: The violin varnish\r\n"
