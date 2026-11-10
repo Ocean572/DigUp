@@ -738,8 +738,8 @@ public final class IndexStore {
         if let ids, ids.isEmpty { return [] }
         let filter = ids.map { " AND id IN (\($0.map(String.init).joined(separator: ",")))" } ?? ""
         var out: Set<FileKind> = []
-        try db.query("SELECT DISTINCT kind FROM files WHERE state = 'pending'\(filter)\(scopeSQL)",
-                     scopeValues) { row in
+        // The folder scope rides `scopeSQL`'s temp-table subquery (schema v6's shape): no bind values.
+        try db.query("SELECT DISTINCT kind FROM files WHERE state = 'pending'\(filter)\(scopeSQL)") { row in
             if let kind = FileKind(rawValue: row.text(0) ?? "") { out.insert(kind) }
         }
         return out
