@@ -2,6 +2,52 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-10 — The `name:` prefix reaches the server UI (the review's last surface gap)
+
+§5 item 4 of the merge review: the engine's `name:` search (PR #190) had no surface in the server's
+own UI — the search row advertised `code:` and nothing else, so the feature the merge carried was
+invisible. Now the row carries a **names** box beside **code**, the placeholder advertises both
+prefixes, and the contract suite pins all of it end-to-end.
+
+* `server/ui/src/components/digup-search.js`: `isNames` / `_names`, the `#names` checkbox with the
+  `#names-label` rule shared with the code label (no new layout, no new color — the search row's
+  flex list grows by one item), the placeholder's `“name: …” names only`, and **mutual exclusion**:
+  ticking one box clears the other, because the engine reads one prefix per query (`code:` leads a
+  text that carries both). `updated()` keeps prefix and box one state, as code's always did.
+* `server/ui/src/app/search-controller.js`: `named(text, isNames)` composes the prefix **once**
+  (text typed with the prefix in it passes through as typed); the words call, the meaning call and
+  the `embed_ahead` warm-up all carry it — and `embed_ahead` carries it precisely so the engine's
+  own `NameQuery` check (`SearchService.swift:175`) keeps the query encoder asleep. Store slice
+  `isNames`; `code` wins a text carrying both prefixes (the flag, not the text).
+* `components/digup-app.js` passes `.isNames`, `main.js` carries the initial slice.
+* Docs: `server/docs/API.md` gained the **"Prefixes inside `q`"** table (`code:` / `name:`) with the
+  rule that the server relays `q` verbatim and adds no rewriting of its own.
+* Tests: unit — `digup-search.test.js` +2 (the box rides the one event, code clears it, the shell's
+  prop writes it; two updates, the box-is-the-state pattern), `search-controller.test.js` +3
+  (prefix passes through once in all three calls; the box composes it; code wins both prefixes).
+  Contract — `test_search_contract.py` +2 (`name: vienna` is names-only with `meaning: false`, a
+  word in no name answers nothing, one letter is no search; `name: vi` reaches "vienna" as a prefix
+  while plain `vi` answers nothing); `test_media_ui.py`'s bundle pin gained `id="names"` +
+  `id="names-label"` — a deliberate pin change in the same commit as the change it pins (the manual
+  allows exactly that, and says to say so).
+
+Gates, native x86_64 on this box: host `npm test` — **59 passed / 0 failed** (12 files) and
+`npm run build` — ok (`app.js` 66.21 kB); engine `swift build -c release` + `swift test` in
+`--target engine-builder` — 179 tests in 20 suites passed, 0 failed, 5.235 s (exit 0 at 21:31:02); the contract suite in the container (4 mounts, `-rs`) —
+139 passed, 1 deselected, 0 failed, 0 skipped, 172.34 s (exit 0 at 21:34:54). The suite's first run on this pass measured 138 passed / **1 failed**: my own new contract
+assertion asked the keyword rule of the *meaning* path (`search("vi")` answers on vectors, z ≥ 2.0 on
+a 15-file corpus); it now runs `meaning: false`, which is the rule the test is about. The numbers
+above are the run after that fix.
+
+Disk, same session (the standing rule: `df -h /` + `docker system df` before any build): `/` went
+**5.3 G → 57 G free**. `docker builder prune --filter "until=336h" -f` reclaimed **46.04 GB** (the
+8-weeks-old groups; the 14-days-newer ones stayed, so the vendor caches of the current work are
+intact), plus `rmi` of seven rebuildable session tags (`digup-builder:fixes`, `digup-builder:fixes3`,
+four `digup-server-test:*`, `digup-engine-merged:local`). Nothing else was touched: the ik-llama pair,
+`nvidia/cuda:12.4.1*`, and the three images the running stacks boot are all in place. The
+`--keep-storage` form of prune is deprecated (it printed 0 B); `--filter until=` is the lever that
+measured.
+
 ## 2026-11-10 — The review's three open calls, fixed: kills, short `name:`, mail charsets
 
 The user asked for the three recorded design items to be fixed (the review trail:

@@ -78,6 +78,30 @@ def test_kind_filter_is_the_engines(search):
     assert hits and all(h["kind"] == "video" for h in hits)
 
 
+def test_a_name_query_is_names_only(search):
+    # "name: …" is the engine's own prefix (#190): the name segments, and NO query vector —
+    # the encoder stays asleep, which is the point of the prefix.
+    names = paths(search["service"].search("name: vienna", limit=10)["hits"])
+    assert names and all("vienna" in n.lower() for n in names), names
+    assert "wakeboarding-vienna.webm" in names
+    # A word in no file's name answers nothing; a word of one letter is no search at all.
+    assert search["service"].search("name: zebra-undreamt", limit=10)["hits"] == []
+    assert search["service"].search("name: v", limit=10)["hits"] == []
+
+
+def test_two_letters_are_name_prefixes_in_a_name_query(search):
+    # #190's review (2026-11-10): "name: vi" reaches "vienna" as a prefix — the name you are
+    # still typing. The plain search keeps its keyword rule (a 2-letter word is the start of too
+    # many words to stand for one): asked keyword-only, "vi" never reaches the file named
+    # "vienna". `meaning: false` keeps vectors out of the question — the meaning path answering
+    # on cosine is the separate contract `test_no_good_matches` pins.
+    reply = search["service"].search("name: vi", limit=10)
+    assert reply["meaning"] is False                          # names never wake the model
+    assert "wakeboarding-vienna.webm" in paths(reply["hits"])
+    assert "wakeboarding-vienna.webm" not in paths(
+        search["service"].search("vi", meaning=False, limit=10)["hits"])
+
+
 def test_no_good_matches_stays_an_empty_answer(search):
     # Stage 2's honest miss: the engine refuses to rank below its bar. The server publishes
     # the emptiness, it never fills it with the best vector it can find.

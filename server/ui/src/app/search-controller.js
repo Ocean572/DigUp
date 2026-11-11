@@ -13,10 +13,16 @@ export function createSearchController({ api, store, pause = TYPING_PAUSE }) {
 
   const results = () => store.get().results;
 
+  /** "name: …" is the engine's own prefix (`NameQuery`, parsed inside `Searcher.search`), so
+   *  a names search rides the query TEXT and the engine keeps its model asleep for it
+   *  (`SearchService` checks the prefix before it embeds). Composed once, never doubled:
+   *  text the user typed with the prefix in it passes through as typed. */
+  const named = (text, isNames) => (isNames && !/^name:/i.test(text) ? "name: " + text : text);
+
   function searchBody(text, meaning, prefixLast) {
     const s = store.get();
     const f = s.filters;
-    const body = {q: text, code: s.isCode, meaning, limit: f.limit};
+    const body = {q: named(text, s.isNames), code: s.isCode, meaning, limit: f.limit};
     if (prefixLast) body.prefix_last = true;
     if (!s.isCode) {
       const kinds = f.kinds;
@@ -31,9 +37,12 @@ export function createSearchController({ api, store, pause = TYPING_PAUSE }) {
     store.set({ filters });
     const trimmed = typed.trim();
     const prefixCode = /^code:/i.test(trimmed);
+    const prefixNames = /^name:/i.test(trimmed);
     const code = prefixCode || filters.code;
+    // One prefix per query, the engine's own order ("code:" leads a text that carries both).
+    const names = !code && (prefixNames || filters.names === true);
     const text = prefixCode ? trimmed.slice(5).trim() : typed;
-    store.set({ isCode: code, text });
+    store.set({ isCode: code, isNames: names, text });
     const generation = ++seq.generation;
     clearTimeout(seq.timer);
     store.set({ navigated: false, error: null });
@@ -46,7 +55,8 @@ export function createSearchController({ api, store, pause = TYPING_PAUSE }) {
       .then((reply) => { if (generation === seq.generation && seq.finalGeneration !== generation) show(reply, "words"); })
       .catch((error) => { if (generation === seq.generation) failed(error); });
     // The meaning is embedded now, so its vector is ready when typing pauses (embed_ahead).
-    api("/api/v1/embed_ahead", {method: "POST", body: JSON.stringify({q: text, code})}).catch(() => {});
+    // A names query rides the prefix, so the engine's own check keeps the encoder asleep for it.
+    api("/api/v1/embed_ahead", {method: "POST", body: JSON.stringify({q: named(text, names), code})}).catch(() => {});
     seq.timer = setTimeout(() => {
       api("/api/v1/search", {method: "POST", body: JSON.stringify(searchBody(text, true, false))})
         .then((reply) => {

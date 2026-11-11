@@ -23,6 +23,7 @@ const store = createStore({
              showWeaker: false, selection: null, lastReply: null },
   filters: { kinds: [], limit: 40 },
   isCode: false,
+  isNames: false,
   text: "",
   navigated: false,
   error: null,

@@ -56,6 +56,45 @@ describe("digup-search", () => {
     expect((await p).detail.limit).toBe(100);
   });
 
+  // The names box: issue #190's surface gap closed — the engine's "name:" prefix is in the row,
+  // on the same event as everything else. Code and names are mutually exclusive because the
+  // engine reads one prefix per query ("code:" leads a text carrying both).
+  it("the names box rides the same event; ticking code clears it", async () => {
+    const names = el.shadowRoot.getElementById("names");
+    const code = el.shadowRoot.getElementById("code");
+    expect(names).not.toBeNull();
+    expect(el.shadowRoot.getElementById("q").placeholder).toContain("name: …");
+
+    const p1 = onceEvent(document, "digup:query-change");
+    names.checked = true;
+    names.dispatchEvent(new Event("change"));
+    const d1 = (await p1).detail;
+    expect(d1.names).toBe(true);
+    expect(d1.code).toBe(false);
+
+    const p2 = onceEvent(document, "digup:query-change");
+    code.checked = true;
+    code.dispatchEvent(new Event("change"));
+    const d2 = (await p2).detail;
+    expect(d2.code).toBe(true);
+    expect(d2.names).toBe(false);
+    await el.updateComplete;
+    expect(el.shadowRoot.getElementById("names").checked).toBe(false);
+  });
+
+  it("the shell's isNames writes the box (prefix and box are one state)", async () => {
+    // The box is the state, the prop is its mirror: `updated()` copies the prop in and the
+    // copy requests the render that shows it — two updates, as the code box's always has.
+    el.isNames = true;
+    await el.updateComplete;
+    await el.updateComplete;
+    expect(el.shadowRoot.getElementById("names").checked).toBe(true);
+    el.isNames = false;
+    await el.updateComplete;
+    await el.updateComplete;
+    expect(el.shadowRoot.getElementById("names").checked).toBe(false);
+  });
+
   it("the all button is a toggle: all six on → click clears all → click restores all", async () => {
     const all = el.shadowRoot.getElementById("kinds-all");
     expect(all.getAttribute("aria-pressed")).toBe("true");            // the default: all on

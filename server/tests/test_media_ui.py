@@ -84,9 +84,11 @@ def test_root_serves_the_lit_ui(media_client):
     assert media_client.get("/style.css").status_code == 200
     # Stage-10 parity with the desktop panel: appearance choice, kind filters, code mode,
     # keyword-first typing (prefix_last then the meaning upgrade), the keys footer.
+    # The names box (issue #190's surface gap, 2026-11-10) joins the code box in the search row.
     assert 'data-theme="system"' in html                    # the thin shell carries it
     assert 'id="theme"' in bundle and "system" in bundle
     assert '"screenshot","Screenshots"' in bundle and 'id="code"' in bundle
+    assert 'id="names"' in bundle and 'id="names-label"' in bundle
     assert "prefix_last" in bundle and "embed_ahead" in bundle
     assert "localStorage" in bundle                          # the theme is kept in the browser
     assert "↑↓" in bundle and "Space" in bundle

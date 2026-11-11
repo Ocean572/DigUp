@@ -1,11 +1,13 @@
-// digup-search — the search box row (input + limit + code), the kind chips, and the
+// digup-search — the search box row (input + limit + code + names), the kind chips, and the
 // ONE search route: every change emits `digup:query-change` with the full filter set
-// (text, code, kinds, limit) and the search-controller runs it. The code prefix and
+// (text, code, names, kinds, limit) and the search-controller runs it. The code prefix and
 // the box are one state (the controller writes store.isCode; updated() reflects it
-// into the box, as app.js did `$("code").checked = code`). In-field keys mirror the
-// desktop panel: ↑↓ pick results (digup:nav), ↩ opens the pick (digup:activate),
-// Space previews only after navigation (digup:preview). Markup and strings ride the
-// vanilla index.html verbatim — test_media_ui greps them from the bundle.
+// into the box, as app.js did `$("code").checked = code`). Code and names are mutually
+// exclusive boxes: the engine reads one prefix per query ("code:" leads, `NameQuery` under it),
+// so ticking one clears the other. In-field keys mirror the desktop panel: ↑↓ pick results
+// (digup:nav), ↩ opens the pick (digup:activate), Space previews only after navigation
+// (digup:preview). Markup and strings ride the vanilla index.html verbatim — test_media_ui
+// greps them from the bundle.
 import { LitElement, html, css } from "lit";
 import { controlCss } from "../styles/controls.js";
 
@@ -15,9 +17,11 @@ const KINDS = [["screenshot", "Screenshots"], ["image", "Images"], ["pdf", "PDFs
 class DigupSearch extends LitElement {
   static properties = {
     isCode: {},
+    isNames: {},
     navigated: {},
     hasSelection: {},
     _code: { state: true },
+    _names: { state: true },
     _limit: { state: true },
     _kinds: { state: true },
   };
@@ -38,8 +42,8 @@ class DigupSearch extends LitElement {
         transform: translateY(-50%); }
     }
     #q:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-    #code-label { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem;
-      color: var(--soft); white-space: nowrap; }
+    #code-label, #names-label { display: inline-flex; align-items: center; gap: 0.35rem;
+      font-size: 0.85rem; color: var(--soft); white-space: nowrap; }
     /* the kind chips: themed per kind, filled when ticked, evenly spaced under the search. */
     #find { display: flex; gap: 0.5rem; margin: 0.5rem 0 0.2rem; justify-content: center; flex-wrap: wrap; }
     #find .kind { --kc: var(--soft); display: inline-flex; align-items: center; gap: 0.4rem;
@@ -67,6 +71,7 @@ class DigupSearch extends LitElement {
   constructor() {
     super();
     this._code = false;
+    this._names = false;
     this._limit = 40;
     this._kinds = new Set(KINDS.map(([k]) => k));   // all ticked = null = all kinds
     this._text = "";
@@ -75,7 +80,7 @@ class DigupSearch extends LitElement {
   #emit() {
     this.dispatchEvent(new CustomEvent("digup:query-change", {
       bubbles: true, composed: true,
-      detail: { text: this._text, code: this._code,
+      detail: { text: this._text, code: this._code, names: this._names,
                 kinds: KINDS.filter(([k]) => this._kinds.has(k)).map(([k]) => k),
                 limit: this._limit },
     }));
@@ -102,6 +107,7 @@ class DigupSearch extends LitElement {
 
   updated(changed) {
     if (changed.has("isCode")) this._code = this.isCode;   // prefix and box are one state
+    if (changed.has("isNames")) this._names = this.isNames;
   }
 
   render() {
@@ -109,7 +115,7 @@ class DigupSearch extends LitElement {
       <section id="searchbox">
         <input id="q" type="search" autocomplete="off" autocorrect="off" spellcheck="false" autofocus
                maxlength="512" .value=${this._text}
-               placeholder="Describe it: “wakeboarding at sunset”, “payment error screenshot” — “code: …” searches code"
+               placeholder="Describe it: “wakeboarding at sunset”, “payment error screenshot” — “code: …” searches code, “name: …” names only"
                @input=${(e) => { this._text = e.target.value; this.#emit(); }}
                @keydown=${this.#fieldKey}>
         <div id="search-side">
@@ -122,7 +128,13 @@ class DigupSearch extends LitElement {
           </select>
           <label id="code-label" title="Search code by what it does (the “code:” prefix does the same)">
             <input id="code" type="checkbox" .checked=${this._code}
-                   @change=${(e) => { this._code = e.target.checked; this.#emit(); }}> code
+                   @change=${(e) => { this._code = e.target.checked; if (e.target.checked) this._names = false;
+                                      this.#emit(); }}> code
+          </label>
+          <label id="names-label" title="Search file and folder names only (the “name:” prefix does the same)">
+            <input id="names" type="checkbox" .checked=${this._names}
+                   @change=${(e) => { this._names = e.target.checked; if (e.target.checked) this._code = false;
+                                      this.#emit(); }}> names
           </label>
         </div>
       </section>

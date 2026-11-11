@@ -113,3 +113,48 @@ describe("search-controller — selection bookkeeping", () => {
     expect(c.selectedHit().media_id).toBe("b");
   });
 });
+
+// "name: …" — the engine's own prefix (Searcher parses it inside `search`, and SearchService
+// skips the encoder for it), so the query carries it as TEXT. Issue #190's review round: the
+// server's UI shows the box, and the controller composes the prefix exactly once.
+describe("search-controller — the name: prefix rides the text", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const setup = () => {
+    const store = createStore({ results: initial(), filters, isCode: false, isNames: false,
+                                text: "", navigated: false });
+    const calls = installFetch({
+      "POST /api/v1/search": mockReply(200, { hits: [hit("m1", "image", 3.1)], strong: 1, meaning: false, ms: {} }),
+      "POST /api/v1/embed_ahead": mockReply(200, {}),
+    });
+    const api = async (path, options) => (await globalThis.fetch(path, options)).json();
+    return { store, calls, c: createSearchController({ api, store }) };
+  };
+
+  it("a typed prefix passes through once — words, warm-up and meaning all carry it", async () => {
+    const { store, calls, c } = setup();
+    c.queryChanged("name: in", { ...filters, names: false });
+    const words = JSON.parse(calls[0].options.body);
+    expect(words).toMatchObject({ q: "name: in", code: false, prefix_last: true });
+    expect(JSON.parse(calls[1].options.body).q).toBe("name: in");   // embed_ahead: the engine's own check sleeps the encoder
+    expect(store.get().isNames).toBe(true);
+    await vi.advanceTimersByTimeAsync(120);
+    expect(JSON.parse(calls[2].options.body).q).toBe("name: in");
+  });
+
+  it("the names box composes the prefix the engine parses", async () => {
+    const { calls, c } = setup();
+    c.queryChanged("in", { ...filters, names: true });
+    expect(JSON.parse(calls[0].options.body).q).toBe("name: in");
+    expect(JSON.parse(calls[1].options.body).q).toBe("name: in");
+  });
+
+  it("code wins a text carrying both prefixes: the code prefix is the flag, names is off", async () => {
+    const { store, calls, c } = setup();
+    c.queryChanged("code: name: in", { ...filters, names: true });
+    expect(store.get().isCode).toBe(true);
+    expect(store.get().isNames).toBe(false);
+    expect(JSON.parse(calls[0].options.body)).toMatchObject({ q: "name: in", code: true });
+  });
+});

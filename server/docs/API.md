@@ -72,6 +72,18 @@ One query, the engine's answer.
 | `meaning` | bool | `true` | `false` = keyword-only (words, no embedding) — the desktop panel's first keystroke |
 | `prefix_last` | bool | `false` | last word as a prefix; the panel's "typing a word that isn't indexed yet" path |
 
+**Prefixes inside `q`** (the engine parses them, so every client gets them through one path):
+
+| prefix | what it does | where |
+|---|---|---|
+| `code: …` | the code index, the same as `"code": true` — the engine strips the prefix and answers from the code searcher | `CodeQuery`, `Searcher.search` |
+| `name: …` | **file and folder names only**: keyword search over the name segments, no query vector — the engine's encoder never starts for it, and the app's unloaded vectors stay unloaded. A 2-letter word there matches as a name prefix (`name: in` finds "Invoices"); one-letter words are no search | `NameQuery`, `Searcher.search`, `SearchService.swift:138` |
+
+The two are one prefix per query: the engine reads `code:` first, so `"code: name: x"` is a code
+search of `name: x`. The server relays `q` verbatim — it adds no rewriting of its own; the UI's
+`code`/`names` boxes are the same two shapes (`code` → the flag, `names` → the `name:` prefix on
+the text).
+
 ```sh
 curl -s -X POST http://127.0.0.1:8787/api/v1/search \
   -H 'content-type: application/json' \
