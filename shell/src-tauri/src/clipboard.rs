@@ -118,7 +118,10 @@ pub fn copy_text(window: &tauri::WebviewWindow, text: &str) -> Result<(), String
 
 #[cfg(target_os = "linux")]
 pub fn copy_text(window: &tauri::WebviewWindow, text: &str) -> Result<(), String> {
-    use gtk::prelude::*;
+    // No `gtk::prelude` import: `Clipboard::get` / `set_text` are the gtk-0.18 generated
+    // inherent methods, and the compiler says the glob is unused (measured at the first
+    // `cargo check --all-targets` on Linux, 2026-11-10 — the crate's own CI job runs plain
+    // `cargo test`, so the warning never reached anyone).
     let text = text.to_string();
     window
         .run_on_main_thread(move || {

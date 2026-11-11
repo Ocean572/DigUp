@@ -2,6 +2,30 @@
 
 One document, kept current (docs/implementation/README.md §10). Newest first.
 
+## 2026-11-10 — The shell's own Rust gate finally ran here (and the one warning it found)
+
+`shell/src-tauri` was blocked on the GTK/WebKit `-dev` packages all review long (§6 item 1 of the
+merge review: "the `-dev` packages"); the user installed them, and the crate's own CI commands ran on
+this box for the first time:
+
+* `cargo check --all-targets` — **exit 0**, dev profile in **38.66 s** (first run: the whole Tauri
+  tree compiled), **1 warning**: `unused import: gtk::prelude` at `src/clipboard.rs:121`.
+* After the one-line removal (gtk-rs 0.18 generates `Clipboard::get` / `set_text` as inherent
+  methods, so the glob was dead): **exit 0, 0.67 s, 0 warnings**.
+* `cargo test` — **22 passed, 0 failed**, 1.76 s, exit 0 at 21:53:33. It includes the review round's
+  `crash_class_tests::a_kill_names_a_file_only_on_a_repeat` and the `copy_path_tests` pair.
+
+Package facts, measured: `pkg-config --exists` came back clean for `dbus-1`, `glib-2.0`, `gtk+-3.0`,
+`webkit2gtk-4.1`, `javascriptcoregtk-4.1`, `libsoup-3.0`, `librsvg-2.0`,
+`ayatana-appindicator3-0.1`. `libxdo-dev` **is** installed (`ii libxdo-dev 1:3.20160805.1-5.1build1`)
+and links, but ships no `xdo.pc`, so its pkg-config probe fails — a packaging fact, not a gap: the
+check's exit 0 is the answer. Nothing else was needed (TLS in `Cargo.lock` is `rustls`, so no
+`libssl-dev`; `pkg-config` 2.5.1 and the C toolchain were already there).
+
+Why the warning survived upstream: the crate's CI job runs plain `cargo test` (`ci.yml:98`), no
+`-D warnings`, so a dead import is invisible to the gate. It is recorded in the code where the import
+was, in the Linux-only function.
+
 ## 2026-11-10 — The `name:` prefix reaches the server UI (the review's last surface gap)
 
 §5 item 4 of the merge review: the engine's `name:` search (PR #190) had no surface in the server's
